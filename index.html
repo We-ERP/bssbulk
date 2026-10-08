@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BSS Links Manager</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-theme="dark">
+<div class="marquee-container"><div class="marquee-text">★★BSS Links★★-★★Show & Go ★★</div></div>
+<div class="sub-header">
+  <div class="clock-box" id="liveClock"></div>
+  <div class="top-actions">
+    <a class="theme-btn hidden" id="adminLink" href="admin.html">⚙️ لوحة الأدمن</a>
+    <button class="theme-btn hidden" id="pwBtn">🔑 كلمة المرور</button>
+    <button class="theme-btn hidden" id="logoutBtn">خروج</button>
+    <button class="theme-btn" onclick="toggleTheme()">تغيير الوضع 🌓</button>
+  </div>
+</div>
+
+<div class="container" id="loginScreen">
+  <h2 class="t" style="text-align:center">تسجيل الدخول</h2>
+  <div id="loginAlert"></div>
+  <div class="input-group"><label>User Name</label><input id="username" class="input-control" placeholder="User Name" autocomplete="username"></div>
+  <div class="input-group"><label>كلمة المرور</label><input type="password" id="password" class="input-control" placeholder="••••••••" autocomplete="current-password"></div>
+  <button class="btn" style="width:100%" id="loginBtn">Login</button>
+</div>
+
+<div class="container hidden" id="mainDashboard">
+  <div id="mainAlert"></div>
+
+  <div id="addBox" class="hidden">
+    <h3 class="t">ADD TT (Copy-Paste)</h3>
+    <div class="input-group"><textarea id="serialInput" class="input-control" placeholder="Please Add All TT As Text"></textarea></div>
+    <div class="btn-container">
+      <button class="btn" id="saveBtn">Go Now</button>
+      <button class="btn red hidden" id="resetBtn">Reset</button>
+    </div>
+    <hr>
+  </div>
+
+  <div id="linkBox" class="hidden">
+    <h3 class="t">تحديث اللينك</h3>
+    <div class="input-group">
+      <label>الصق اللينك الجديد كامل (أي TT كمثال) وهيتم استبدال رقم الـ TT تلقائياً</label>
+      <input id="newLink" class="input-control" style="direction:ltr" placeholder="https://bss.te.eg:12900/...&workItemId=123">
+    </div>
+    <button class="btn" id="linkBtn">تحديث اللينك</button>
+    <div class="mono" id="linkPreview" style="margin-top:10px"></div>
+    <hr>
+  </div>
+
+  <h3 style="color:var(--neon-green)">Links Avail Now <span id="total" style="color:var(--text-muted);font-size:.9rem"></span></h3>
+  <div class="popup-notice">💡 ملحوظة: يرجى السماح بالنوافذ المنبثقة (Pop-ups) في متصفحك على Lets GO.</div>
+  <div class="groups-grid" id="groupsContainer"></div>
+</div>
+
+<script type="module">
+import { $, auth, db, flash, esc, emailOf, initTheme, startClock, getProfile, can, claimSession, logout,
+  DEFAULT_URL, toTemplate, buildUrl, signInWithEmailAndPassword, onAuthStateChanged, signOut,
+  EmailAuthProvider, reauthenticateWithCredential, updatePassword,
+  doc, getDoc, setDoc, getDocs, addDoc, collection, query, orderBy, writeBatch, serverTimestamp } from "./common.js";
+
+initTheme(); startClock($("liveClock"));
+let profile = null, settings = { baseUrl: DEFAULT_URL, chunkSize: 30 }, entering = false;
+
+$("loginBtn").onclick = async () => {
+  const u = $("username").value, p = $("password").value, btn = $("loginBtn");
+  if (!u.trim() || !p) return flash($("loginAlert"), "برجاء ملء الحقول المطلوبة!");
+  btn.textContent = "جاري التحقق الآمن..."; btn.disabled = true;
+  try { await signInWithEmailAndPassword(auth, emailOf(u), p); }
+  catch (e) { flash($("loginAlert"), "بيانات الدخول غير صحيحة!"); }
+  btn.textContent = "Login"; btn.disabled = false;
+};
+$("password").addEventListener("keydown", e => e.key === "Enter" && $("loginBtn").click());
+$("logoutBtn").onclick = async () => { await logout(); location.reload(); };
+
+$("pwBtn").onclick = async () => {
+  const oldP = prompt("كلمة المرور الحالية:"); if (!oldP) return;
+  const newP = prompt("كلمة المرور الجديدة (6 أحرف على الأقل):"); if (!newP) return;
+  try {
+    await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(auth.currentUser.email, oldP));
+    await updatePassword(auth.currentUser, newP);
+    flash($("mainAlert"), "تم تغيير كلمة المرور", true);
+  } catch (e) { flash($("mainAlert"), "فشل تغيير كلمة المرور، تأكد من البيانات"); }
+};
+
+onAuthStateChanged(auth, async u => {
+  if (!u) { $("loginScreen").classList.remove("hidden"); $("mainDashboard").classList.add("hidden"); return; }
+  if (entering) return; entering = true;
+  try {
+    const p = await getProfile(u.uid);
+    if (!p || !p.active) { await signOut(auth); flash($("loginAlert"), "هذا الحساب غير مفعّل أو غير موجود"); return; }
+    const ok = await claimSession(u, p, () => { alert("تم إنهاء جلستك (تم الدخول من مكان آخر أو بواسطة الأدمن)"); location.reload(); });
+    if (!ok) { await signOut(auth); flash($("loginAlert"), "عذراً، هذا الحساب مفتوح بالفعل في جلسة (متصفح/جهاز) أخرى نشطة!"); return; }
+    profile = p;
+    if (!sessionStorage.getItem("bss_logged")) {
+      sessionStorage.setItem("bss_logged", "1");
+      addDoc(collection(db, "logs"), { uid: u.uid, username: p.username, at: serverTimestamp() }).catch(() => {});
+    }
+    $("loginScreen").classList.add("hidden"); $("mainDashboard").classList.remove("hidden");
+    ["logoutBtn", "pwBtn"].forEach(i => $(i).classList.remove("hidden"));
+    if (p.role === "admin") $("adminLink").classList.remove("hidden");
+    $("addBox").classList.toggle("hidden", !can(p, "add") && !can(p, "reset"));
+    $("serialInput").parentElement.classList.toggle("hidden", !can(p, "add"));
+    $("saveBtn").classList.toggle("hidden", !can(p, "add"));
+    $("resetBtn").classList.toggle("hidden", !can(p, "reset"));
+    $("linkBox").classList.toggle("hidden", !can(p, "editLink"));
+    await loadSettings(); await loadGrid();
+  } catch (e) { console.error(e); flash($("loginAlert"), "خطأ في الاتصال بقاعدة البيانات"); }
+  finally { entering = false; }
+});
+
+async function loadSettings() {
+  try {
+    const s = await getDoc(doc(db, "settings", "app"));
+    if (s.exists()) settings = { ...settings, ...s.data() };
+  } catch (e) {}
+  $("linkPreview").textContent = settings.baseUrl;
+}
+
+$("linkBtn").onclick = async () => {
+  const tpl = toTemplate($("newLink").value);
+  if (!tpl) return flash($("mainAlert"), "اللينك لازم يحتوي على workItemId=");
+  await setDoc(doc(db, "settings", "app"), { baseUrl: tpl }, { merge: true });
+  $("newLink").value = ""; await loadSettings(); await loadGrid();
+  flash($("mainAlert"), "تم تحديث اللينك لكل الروابط", true);
+};
+
+$("saveBtn").onclick = async () => {
+  const btn = $("saveBtn"), alertDiv = $("mainAlert");
+  const list = [...new Set($("serialInput").value.split(/[\s,;]+/).map(s => s.trim().replace(/^'+/, "")).filter(Boolean))];
+  if (!list.length) return flash(alertDiv, "الرجاء لصق بعض السيريلات أولاً!");
+  btn.textContent = "جاري الحفظ..."; btn.disabled = true;
+  try {
+    const base = Date.now() * 1000;
+    for (let i = 0; i < list.length; i += 400) {
+      const b = writeBatch(db);
+      list.slice(i, i + 400).forEach((s, k) =>
+        b.set(doc(db, "tts", s.replace(/\//g, "_")), { serial: s, n: base + i + k, by: profile.username }));
+      await b.commit();
+    }
+    flash(alertDiv, `تم بنجاح إضافة ${list.length} TT وإنتاج روابطها!`, true);
+    $("serialInput").value = ""; await loadGrid();
+  } catch (e) { flash(alertDiv, "فشل حفظ البيانات: " + e.message); }
+  btn.textContent = "Go Now"; btn.disabled = false;
+};
+
+$("resetBtn").onclick = async () => {
+  if (!confirm("تنبيه هام: هل أنت متأكد من مسح كافة الـ TT وتصفير المجموعات؟")) return;
+  const btn = $("resetBtn"); btn.disabled = true; btn.textContent = "جاري التصفير...";
+  try {
+    const snap = await getDocs(collection(db, "tts"));
+    for (let i = 0; i < snap.docs.length; i += 400) {
+      const b = writeBatch(db); snap.docs.slice(i, i + 400).forEach(d => b.delete(d.ref)); await b.commit();
+    }
+    flash($("mainAlert"), "تم مسح ال TT", true); await loadGrid();
+  } catch (e) { flash($("mainAlert"), "فشل المسح: " + e.message); }
+  btn.disabled = false; btn.textContent = "Reset";
+};
+
+async function loadGrid() {
+  const box = $("groupsContainer");
+  if (!can(profile, "open")) { box.innerHTML = "<p style='color:var(--text-muted)'>ليس لديك صلاحية فتح الروابط.</p>"; return; }
+  box.innerHTML = "<p style='color:var(--text-muted)'>جاري التحميل...</p>";
+  const snap = await getDocs(query(collection(db, "tts"), orderBy("n")));
+  const links = snap.docs.map(d => buildUrl(settings.baseUrl, d.data().serial));
+  $("total").textContent = links.length ? `(${links.length})` : "";
+  box.innerHTML = "";
+  if (!links.length) { box.innerHTML = "<p style='color:var(--text-muted);grid-column:1/-1'>لا توجد TT مسجلة حتى الآن.</p>"; return; }
+  const size = Math.max(1, +settings.chunkSize || 30);
+  for (let i = 0, g = 1; i < links.length; i += size, g++) {
+    const chunk = links.slice(i, i + size);
+    const card = document.createElement("div"); card.className = "group-card";
+    card.innerHTML = `<div class="group-title">G-Link ${g}</div><div class="group-count">تحتوي على ${chunk.length} رابط</div><button class="btn-go">Lets GO</button>`;
+    card.querySelector("button").onclick = () => {
+      if (confirm(`هل أنت متأكد من فتح ${chunk.length} صفحة في نفس الوقت؟`)) chunk.forEach(u => window.open(u, "_blank"));
+    };
+    box.appendChild(card);
+  }
+}
+</script>
+</body>
+</html>
